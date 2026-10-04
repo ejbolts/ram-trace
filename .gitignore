@@ -1,0 +1,23 @@
+# Build output and temporary files
+**/bin/
+**/obj/
+artifacts/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+
+# Logs and DBs
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini

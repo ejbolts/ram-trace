@@ -13,6 +13,10 @@ public sealed class History : IDisposable
         try
         {
         db.Exec("PRAGMA synchronous=NORMAL");
+        // Checkpoint about every MiB and trim reusable journal space on WAL reset.
+        // Active readers can temporarily keep the journal above this target.
+        db.Exec("PRAGMA wal_autocheckpoint=256");
+        db.Exec("PRAGMA journal_size_limit=1048576");
         if (db.Scalar("PRAGMA user_version") == 2) return;
         var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(folder).ToLowerInvariant())))[..16];
         using var gate = new Mutex(false, @"Local\RamTrace-schema-" + key);
@@ -136,37 +140,39 @@ public sealed class History : IDisposable
     public long FirstTime => db.Scalar("SELECT COALESCE(MIN(time),0) FROM snapshots");
     public void Maintain(long now, int days, bool compact = true)
     {
-        if (!compact) { if (days > 0) db.Exec("DELETE FROM snapshots WHERE time<?", now - days * 86400000L); return; }
         var cutoff = (now - 48L * 3600000) / 300000 * 300000;
         db.Exec("BEGIN IMMEDIATE");
         try
         {
             if (days > 0) db.Exec("DELETE FROM snapshots WHERE time<?", now - days * 86400000L);
-            db.Exec("CREATE TEMP TABLE roll_s AS SELECT (time/300000)*300000 AS time,SUM(samples) AS samples,MAX(total) AS total,SUM(used_sum) AS used_sum,MAX(used_peak) AS used_peak,MAX(skipped) AS skipped,300000 AS duration FROM snapshots WHERE time<? AND duration=0 GROUP BY time/300000", cutoff);
-            db.Exec("""
-                CREATE TEMP TABLE roll_u AS
-                SELECT (time/300000)*300000 AS time,app_id,SUM(ws_sum) AS ws_sum,MAX(ws_peak) AS ws_peak,
-                MAX(CASE WHEN wr=1 THEN ws_peak_time END) AS ws_peak_time,SUM(private_sum) AS private_sum,MAX(private_peak) AS private_peak,
-                MAX(CASE WHEN pr=1 THEN private_peak_time END) AS private_peak_time,SUM(processes_sum) AS processes_sum,SUM(observations) AS observations,
-                MIN(first_seen) AS first_seen,MAX(last_seen) AS last_seen
-                FROM (SELECT u.*,ROW_NUMBER() OVER(PARTITION BY u.time/300000,app_id ORDER BY ws_peak DESC,u.time) AS wr,
-                    ROW_NUMBER() OVER(PARTITION BY u.time/300000,app_id ORDER BY private_peak DESC,u.time) AS pr
-                    FROM usage u JOIN snapshots s ON s.time=u.time WHERE s.time<? AND s.duration=0)
-                GROUP BY time/300000,app_id
-                """, cutoff);
-            db.Exec("""
-                CREATE TEMP TABLE roll_g AS
-                SELECT (time/300000)*300000 AS time,app_id,metric,SUM(value_sum) AS value_sum,MAX(peak) AS peak,
-                MAX(CASE WHEN r=1 THEN peak_time END) AS peak_time,SUM(observations) AS observations,MIN(first_seen) AS first_seen,MAX(last_seen) AS last_seen
-                FROM (SELECT g.*,ROW_NUMBER() OVER(PARTITION BY g.time/300000,app_id,metric ORDER BY peak DESC,g.time) AS r
-                FROM gpu g JOIN snapshots s ON s.time=g.time WHERE s.time<? AND s.duration=0)
-                GROUP BY time/300000,app_id,metric
-                """, cutoff);
-            db.Exec("DELETE FROM snapshots WHERE time<? AND duration=0", cutoff);
-            db.Exec("INSERT INTO snapshots SELECT * FROM roll_s");
-            db.Exec("INSERT INTO usage SELECT * FROM roll_u");
-            db.Exec("INSERT INTO gpu SELECT * FROM roll_g");
-            db.Exec("DROP TABLE roll_s"); db.Exec("DROP TABLE roll_u"); db.Exec("DROP TABLE roll_g");
+            if (compact)
+            {
+                db.Exec("CREATE TEMP TABLE roll_s AS SELECT (time/300000)*300000 AS time,SUM(samples) AS samples,MAX(total) AS total,SUM(used_sum) AS used_sum,MAX(used_peak) AS used_peak,MAX(skipped) AS skipped,300000 AS duration FROM snapshots WHERE time<? AND duration=0 GROUP BY time/300000", cutoff);
+                db.Exec("""
+                    CREATE TEMP TABLE roll_u AS
+                    SELECT (time/300000)*300000 AS time,app_id,SUM(ws_sum) AS ws_sum,MAX(ws_peak) AS ws_peak,
+                    MAX(CASE WHEN wr=1 THEN ws_peak_time END) AS ws_peak_time,SUM(private_sum) AS private_sum,MAX(private_peak) AS private_peak,
+                    MAX(CASE WHEN pr=1 THEN private_peak_time END) AS private_peak_time,SUM(processes_sum) AS processes_sum,SUM(observations) AS observations,
+                    MIN(first_seen) AS first_seen,MAX(last_seen) AS last_seen
+                    FROM (SELECT u.*,ROW_NUMBER() OVER(PARTITION BY u.time/300000,app_id ORDER BY ws_peak DESC,u.time) AS wr,
+                        ROW_NUMBER() OVER(PARTITION BY u.time/300000,app_id ORDER BY private_peak DESC,u.time) AS pr
+                        FROM usage u JOIN snapshots s ON s.time=u.time WHERE s.time<? AND s.duration=0)
+                    GROUP BY time/300000,app_id
+                    """, cutoff);
+                db.Exec("""
+                    CREATE TEMP TABLE roll_g AS
+                    SELECT (time/300000)*300000 AS time,app_id,metric,SUM(value_sum) AS value_sum,MAX(peak) AS peak,
+                    MAX(CASE WHEN r=1 THEN peak_time END) AS peak_time,SUM(observations) AS observations,MIN(first_seen) AS first_seen,MAX(last_seen) AS last_seen
+                    FROM (SELECT g.*,ROW_NUMBER() OVER(PARTITION BY g.time/300000,app_id,metric ORDER BY peak DESC,g.time) AS r
+                    FROM gpu g JOIN snapshots s ON s.time=g.time WHERE s.time<? AND s.duration=0)
+                    GROUP BY time/300000,app_id,metric
+                    """, cutoff);
+                db.Exec("DELETE FROM snapshots WHERE time<? AND duration=0", cutoff);
+                db.Exec("INSERT INTO snapshots SELECT * FROM roll_s");
+                db.Exec("INSERT INTO usage SELECT * FROM roll_u");
+                db.Exec("INSERT INTO gpu SELECT * FROM roll_g");
+                db.Exec("DROP TABLE roll_s"); db.Exec("DROP TABLE roll_u"); db.Exec("DROP TABLE roll_g");
+            }
             db.Exec("COMMIT");
         }
         catch { db.Exec("ROLLBACK"); throw; }

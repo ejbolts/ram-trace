@@ -62,8 +62,38 @@ using (var reopened = new History(root)) Check(reopened.Summary(0, now).Samples 
 var settings = new Settings { Theme = "Dark", IntervalSeconds = 60, RetentionDays = 7, Paused = true }; settings.Save(root);
 var loaded = Settings.Load(root);
 Check(loaded.Theme == "Dark" && loaded.IntervalSeconds == 60 && loaded.Paused, "Settings survive atomic save and reload");
+Check(new Settings().RetentionDays == 7 && Settings.Load(Path.Combine(root, "new-install")).RetentionDays == 7, "New installations default to seven-day retention");
+File.WriteAllText(Path.Combine(root, "settings.json"), "{\"RetentionDays\":0}");
+Check(Settings.Load(root).RetentionDays == 0, "An existing explicit Forever choice remains unchanged");
+File.WriteAllText(Path.Combine(root, "settings.json"), "{\"RetentionDays\":123}");
+Check(Settings.Load(root).RetentionDays == 7, "Invalid retention falls back to seven days");
 File.WriteAllText(Path.Combine(root, "settings.json"), "{broken");
 Check(Settings.Load(root).Theme == "System", "Corrupt settings fall back safely");
+var storageRoot = Path.Combine(root, "storage-checks");
+using (var history = new History(storageRoot))
+using (var inspect = new Sqlite(Path.Combine(storageRoot, "history.db")))
+{
+    long boundary = now - 7 * 86400000L;
+    var apps = Enumerable.Range(0, 60).Select(i => new AppSample("Storage " + i + ".exe", 1000000 + i, 2000000 + i, 1, 2000, 1000, 500)).ToList();
+    var gpu = new GpuReading(true, true, 100000, 60000, 500, new(), new());
+    for (int i = 0; i < 180; i++) history.Add(new(boundary - 2000000 + i * 10000L, 10000000, 5000000, 0, apps, gpu));
+    history.Add(new(boundary, 10000000, 5000000, 0, apps, gpu));
+    history.Add(new(boundary + 10000, 10000000, 6000000, 0, apps, gpu));
+    history.Add(new(now - 1000, 10000000, 7000000, 0, apps, gpu));
+    long journalBytes = new FileInfo(Path.Combine(storageRoot, "history.db-wal")).Length;
+    Check(journalBytes < 2 * 1048576 && history.Summary(0, now).Samples == 183, "Repeated writes keep a small reusable journal without dropping samples");
+    inspect.Exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    long bytesBefore = new FileInfo(Path.Combine(storageRoot, "history.db")).Length;
+    history.Maintain(now, 7, false);
+    Check(history.Summary(0, now).Samples == 3 && history.FirstTime == boundary, "Seven-day expiry preserves the exact boundary and recent full-detail samples");
+    Check(inspect.Scalar("SELECT COUNT(*) FROM usage WHERE time<?", boundary) == 0 && inspect.Scalar("SELECT COUNT(*) FROM gpu WHERE time<?", boundary) == 0, "Expiry removes dependent RAM and GPU records");
+    inspect.Exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    Check(new FileInfo(Path.Combine(storageRoot, "history.db")).Length < bytesBefore, "Retention reclaims actual disk space with summarization disabled");
+    history.Maintain(now, 7, false);
+    Check(history.Summary(0, now).Samples == 3, "Repeated expiry preserves surviving history");
+    using var integrity = inspect.Prepare("PRAGMA integrity_check");
+    Check(integrity.Read() && integrity.Text(0) == "ok", "Storage cleanup leaves SQLite integrity intact");
+}
 var real = Sampler.Capture();
 Check(real.Total > 0 && real.Used > 0 && real.Used <= real.Total && real.Apps.Count > 0 && real.Apps.All(a => a.WorkingSet >= 0 && a.Processes > 0), "Live Windows memory capture returns valid system and app values");
 using (var history = new History(Path.Combine(root, "gpu-checks")))

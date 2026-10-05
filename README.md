@@ -1,6 +1,6 @@
 # RamTrace
 
-A native Windows tray app for RAM, GPU and VRAM history. Samples every **10 seconds** by default and keeps history **forever** unless you choose a time limit.
+A native Windows tray app for RAM, GPU and VRAM history. Samples every **10 seconds** and keeps **7 days** of history by default. Existing saved retention choices are preserved.
 
 ## Use
 
@@ -13,6 +13,8 @@ Run `RamTrace.exe`. Open it again, or double-click its tray icon, to show the da
 - Click a column heading to sort it.
 - Export CSV uses the selected range, metric, search and filters. If an app is selected, it exports that app only.
 - Settings offers System/Light/Dark appearance, startup, sampling interval, and retention.
+
+Expired history is removed at startup and during hourly maintenance while logging. Cleanup reclaims unused database pages even when summarization is off. The temporary SQLite write journal is normally kept near 1 MB; long-running readers or large maintenance transactions can temporarily exceed that target. The storage figure includes the database and its journal files. For fewer records, choose a longer sample interval (60 seconds records one sixth as many samples as 10 seconds).
 
 **Forever** has no automatic expiry. By default, samples older than 48 hours are summarized into five-minute weighted averages and sampled peaks, preserving the original peak timestamps. Turn off **Summarize history after 48 hours** to retain every individual sample going forward. Summarization already performed cannot be reversed. Forever history continues to use more disk space over time.
 

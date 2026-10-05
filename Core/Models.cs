@@ -7,7 +7,7 @@ namespace RamTrace.Core;
 public sealed class Settings
 {
     public int IntervalSeconds { get; set; } = 10;
-    public int RetentionDays { get; set; } = 0;
+    public int RetentionDays { get; set; } = 7;
     public string Theme { get; set; } = "System";
     public bool Paused { get; set; }
     public bool GraphExpanded { get; set; } = true;
@@ -18,7 +18,7 @@ public sealed class Settings
         {
             var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(Path.Combine(folder, "settings.json"))) ?? new();
             s.IntervalSeconds = new[] { 10, 15, 30, 60, 120 }.Contains(s.IntervalSeconds) ? s.IntervalSeconds : 10;
-            s.RetentionDays = new[] { 0, 7, 30, 90 }.Contains(s.RetentionDays) ? s.RetentionDays : 0;
+            s.RetentionDays = new[] { 0, 7, 30, 90 }.Contains(s.RetentionDays) ? s.RetentionDays : 7;
             s.Theme = new[] { "System", "Light", "Dark" }.Contains(s.Theme) ? s.Theme : "System";
             return s;
         }
